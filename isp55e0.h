@@ -43,7 +43,9 @@ struct device {
 	struct content fw;
 	struct content data;	/* read data from */
 	struct content data_dump; /* write the data flash into */
+#if(defined(WITH_USB) && (WITH_USB == 1))
 	libusb_device_handle *usb_h;
+#endif
 	uint32_t bv;		/* bootloader version */
 	uint8_t id[8];
 	uint8_t config_data[12];

@@ -45,7 +45,9 @@
 #define be32toh OSSwapBigToHostInt32
 #endif
 
+#if(defined(WITH_USB) && (WITH_USB == 1))
 #include <libusb-1.0/libusb.h>
+#endif
 
 #include "isp55e0.h"
 /* Profile of supported chips */
@@ -172,6 +174,7 @@ static unsigned char serial_crc(unsigned char *req, int req_len)
 }
 #endif
 
+#if(defined(WITH_USB) && (WITH_USB == 1))
 /* Open and claim the USB device */
 static void open_usb_device(struct device *dev)
 {
@@ -198,13 +201,12 @@ static void open_usb_device(struct device *dev)
 	if (ret)
 		errx(EXIT_FAILURE, "Can't claim the USB device\n");
 }
+#endif
 
 /* Send a request, get a reply */
 static int transfer(struct device *dev, void *req, int req_len,
 		    void *resp, int resp_len)
 {
-	int len;
-	int ret;
 #ifndef WIN32
 	int serial_transmitted;
 	unsigned char req_serial_prefix[2] = {SERIAL_REQ_MAGIC1, SERIAL_REQ_MAGIC2};
@@ -241,6 +243,10 @@ static int transfer(struct device *dev, void *req, int req_len,
 
 	} else {
 #endif
+
+#if(defined(WITH_USB) && (WITH_USB == 1))
+		int len;
+		int ret;
 		/* USB case */
 		ret = libusb_bulk_transfer(dev->usb_h, EP_OUT, req, req_len,
 				   &len, USB_TIMEOUT);
@@ -257,6 +263,10 @@ static int transfer(struct device *dev, void *req, int req_len,
 
 		if (dev->debug)
 			hexdump("response", resp, len);
+#else
+	/* transfer to nowhere */
+	return -ENODEV;
+#endif
 
 #ifndef WIN32
 	}
@@ -774,7 +784,12 @@ int main(int argc, char *argv[])
 		open_serial_device(&dev, port);
 	else
 #endif
+	
+#if(defined(WITH_USB) && (WITH_USB == 1))
 		open_usb_device(&dev);
+#else
+		printf("Serial port is not specified\n");
+#endif
 
 	read_chip_type(&dev);
 	printf("Found device %s\n", dev.profile->name);
