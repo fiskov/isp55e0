@@ -1,10 +1,28 @@
+TARGET = isp55e0
+SRCS = isp55e0.c
+OBJS = $(SRCS:.c=.o)
+
 CC ?= gcc
-CFLAGS = -O2 -Wall -Werror
+WITHOUT_USB ?= 0
+
+ifeq ($(WITHOUT_USB), 0)
 LDLIBS = -lusb-1.0
+endif
 
-all: isp55e0
+CFLAGS = -O2 -Wall -Werror
+ifeq ($(WITHOUT_USB), 1)
+CFLAGS += -DWITHOUT_USB=${WITHOUT_USB}
+endif
 
-isp55e0.o: isp55e0.c chips.h compat-err.h
+.PHONY: all clean chips
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) -o $(TARGET) $(OBJS) $(CFLAGS) $(LDLIBS)
+
+.c.o:
+	$(CC) $(CFLAGS)  -c $< -o $@
 
 chips:
 	./parse_wcfg.py > chips.h

@@ -1,6 +1,7 @@
 /*
  * ISP-55E0 - an ISP programmer for some WinChipHead MCU families
  * Copyright 2021 Frank Zago
+ * Copyright 2025 Vladimir Fiskov
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -45,9 +46,13 @@
 #define be32toh OSSwapBigToHostInt32
 #endif
 
+#if (!defined(WITHOUT_USB) || (WITHOUT_USB == 0))
 #include <libusb-1.0/libusb.h>
+#endif
 
 #include "isp55e0.h"
+#include "version.h"
+
 /* Profile of supported chips */
 static const struct ch_profile profiles[] = {
 #include "chips.h"
@@ -57,29 +62,51 @@ static const struct option long_options[] = {
 	{ "code-verify", required_argument, 0, 'c' },
 	{ "debug", no_argument, 0,  'd' },
 	{ "code-flash", required_argument, 0,  'f' },
+	{ "version", no_argument, 0,  'v' },
 	{ "help", no_argument, 0,  'h' },
 	{ "data-flash", required_argument, 0,  'k' },
 	{ "data-verify", required_argument, 0,  'l' },
 	{ "data-dump", required_argument, 0,  'm' },
+	{ "user-config", required_argument, 0, 'u' },
+	{ "speed", required_argument, 0, 's' },
+	{ "write-protection-config", required_argument, 0, 'w' },
 #ifndef WIN32
 	{ "port", required_argument, 0,  'p' },
 #endif
 	{ 0, 0, 0, 0 }
 };
 
+#define BAUDRATE_DEFAULT B115200
+
+static const struct baudrate baudrates[] = {
+	{ 230400, B230400 },
+	{ 460800, B460800 },
+	{ 500000, B500000 },
+	{ 921600, B921600 },
+	{ 1000000, B1000000 },
+	{ 2000000, B2000000 }
+};
+
+static int transfer(struct device *dev, void *req, int req_len,
+		    void *resp, int resp_len);
+
 static void usage(void)
 {
-	printf("ISP programmer for some WinChipHead MCUs\n");
+	printf("ISP programmer [version %s] for some WinChipHead MCUs\n", PACKAGE_VERSION);
 	printf("Options:\n");
 #ifndef WIN32
 	printf("  --port, -p          use serial port instead of usb\n");
 #endif
 	printf("  --code-flash, -f    firmware to flash\n");
-	printf("  --code-verify, -c   verify existing firwmare\n");
+	printf("  --code-verify, -c   verify existing firmware\n");
 	printf("  --data-flash, -k    data to flash\n");
 	printf("  --data-verify, -l   verify existing data\n");
 	printf("  --data-dump, -m     dump the data flash to a file\n");
 	printf("  --debug, -d         turn debug traces on\n");
+	printf("  --speed, -s         UART speed [115200,230400,460800,500000,921600,1000000,2000000]\n");
+	printf("  --user-config, -u   User-level Configuration, e.g. 4d\n");
+	printf("  --write-protection-config, -w Write-Protection Cfg., e.g. ffffffff\n");
+	printf("  --version, -v       show the version\n");
 	printf("  --help, -h          this help\n");
 }
 
@@ -98,6 +125,46 @@ static void hexdump(const char *name, const void *data, int len)
 	printf("\n");
 }
 
+static void hexdump_line(const char *name, const void *data, int len)
+{
+	const uint8_t *p = data;
+	int i;
+
+	printf("%s ", name);
+	for (i = 0; i < len; i++) {
+		printf("%s%02x", (i > 0 ? "-" : ""), *p++);
+	}
+	printf("\n");
+}
+
+static int percentage_inc(struct percentage *p, int value)
+{
+	if (!p || !(p->max))
+		return -1;
+
+	int prc, prc_new, step, step_new;
+
+	prc = p->pos * 100 / p->max;
+	step = prc / p->step_percentage;
+
+	p->pos += value;
+
+	prc_new = p->pos * 100 / p->max;
+	step_new = prc_new / p->step_percentage;
+
+	if (step != step_new)
+	{
+		if (p->is_dot)
+			printf(".");
+		else
+			printf("%d%%%s", prc_new, (p->is_cr ? "\r" : "\n"));
+		if (p->is_dot || p->is_cr)
+			fflush(stdout);
+	}
+
+	return 0;
+}
+
 #ifndef WIN32
 static void open_serial_device(struct device *dev, char *port)
 {
@@ -107,7 +174,7 @@ static void open_serial_device(struct device *dev, char *port)
 	speed_t baud = B115200;
 
 	if ((dev->fd = open(port, O_RDWR | O_NOCTTY)) == -1)
-		errx(EXIT_FAILURE, "Error occured while opening serial port '%s'", port);
+		errx(EXIT_FAILURE, "Error occurred while opening serial port '%s'", port);
 
 	ret = fcntl(dev->fd, F_SETFL, O_RDWR) ;
 	if (ret < 0)
@@ -157,21 +224,53 @@ static void open_serial_device(struct device *dev, char *port)
 
 	return;
 fail:
-	errx(EXIT_FAILURE, "Error occured while configuring serial port");
+	errx(EXIT_FAILURE, "Error occurred while configuring serial port");
 }
 
 static unsigned char serial_crc(unsigned char *req, int req_len)
 {
 	unsigned char crc = 0;
 
-	for(int i=0;i<req_len;i++){
+	for(int i = 0; i < req_len; i++){
 		crc += req[i];
 	}
 
 	return crc;
 }
+
+static void change_uart_baudrate(struct device *dev)
+{
+	uint32_t baud = dev->baud.baudrate;
+	uint32_t baud_param = dev->baud.baud_param_ioterm;
+	struct req_set_baudrate req = {
+		.hdr.command = CMD_SET_BAUD,
+		.hdr.data_len = sizeof(req) - sizeof(req.hdr),
+		.baud[0] = baud >> 0,
+		.baud[1] = baud >> 8,
+		.baud[2] = baud >> 16,
+		.baud[3] = baud >> 24
+	};
+	struct resp_set_baudrate resp;
+	int ret;
+
+	printf("Set new baudrate=%d\n", baud);
+
+	ret = transfer(dev, &req, sizeof(req), &resp, sizeof(resp));
+	if (ret)
+		errx(EXIT_FAILURE, "Can't set the device UART baudrate");
+
+	if (resp.return_code)
+		errx(EXIT_FAILURE, "The device refused to change baudrate");
+
+	struct termios options;
+	tcgetattr(dev->fd, &options);
+	cfsetispeed(&options, baud_param);
+	cfsetospeed(&options, baud_param);
+	tcsetattr(dev->fd, TCSANOW, &options);
+}
 #endif
 
+#if (!defined(WITHOUT_USB) || (WITHOUT_USB == 0))
 /* Open and claim the USB device */
 static void open_usb_device(struct device *dev)
 {
@@ -198,13 +297,12 @@ static void open_usb_device(struct device *dev)
 	if (ret)
 		errx(EXIT_FAILURE, "Can't claim the USB device\n");
 }
+#endif
 
 /* Send a request, get a reply */
 static int transfer(struct device *dev, void *req, int req_len,
 		    void *resp, int resp_len)
 {
-	int len;
-	int ret;
 #ifndef WIN32
 	int serial_transmitted;
 	unsigned char req_serial_prefix[2] = {SERIAL_REQ_MAGIC1, SERIAL_REQ_MAGIC2};
@@ -241,6 +339,10 @@ static int transfer(struct device *dev, void *req, int req_len,
 
 	} else {
 #endif
+
+#if (!defined(WITHOUT_USB) || (WITHOUT_USB == 0))
+		int len;
+		int ret;
 		/* USB case */
 		ret = libusb_bulk_transfer(dev->usb_h, EP_OUT, req, req_len,
 				   &len, USB_TIMEOUT);
@@ -257,6 +359,10 @@ static int transfer(struct device *dev, void *req, int req_len,
 
 		if (dev->debug)
 			hexdump("response", resp, len);
+#else
+	/* transfer to nowhere */
+	return -ENODEV;
+#endif
 
 #ifndef WIN32
 	}
@@ -346,6 +452,18 @@ static void write_config(struct device *dev)
 		 */
 		req.config_data[8] &= ~0x80;
 	}
+
+	if (dev->upd_cfg_user_bits)
+		req.config_data[8] = dev->cfg_user_bits;
+
+	if (dev->upd_protection_bits) {
+		req.config_data[0] = dev->cfg_protection_bits >> 24;
+		req.config_data[1] = dev->cfg_protection_bits >> 16;
+		req.config_data[2] = dev->cfg_protection_bits >> 8;
+		req.config_data[3] = dev->cfg_protection_bits;
+	}
+
+	hexdump_line("Write new config-bits ", req.config_data, sizeof(req.config_data));
 
 	ret = transfer(dev, &req, sizeof(req), &resp, sizeof(resp));
 	if (ret)
@@ -484,6 +602,11 @@ static void send_key(struct device *dev)
 static int flash_rw(struct device *dev, int cmd, struct content *info,
 		    int *offset_out)
 {
+	struct percentage prc = {
+		.max = info->len,
+		.step_percentage = 10,
+		.is_cr = true
+	};
 	struct req_flash_rw req = {
 		.hdr.command = cmd,
 	};
@@ -519,6 +642,7 @@ static int flash_rw(struct device *dev, int cmd, struct content *info,
 
 		to_send -= len;
 		offset += len;
+		percentage_inc(&prc, len);
 	}
 
 	if (cmd == CMD_WRITE_CODE_FLASH && dev->profile->need_last_write) {
@@ -598,6 +722,11 @@ static void write_data_flash(struct device *dev)
 
 static void read_data_flash(struct device *dev)
 {
+	struct percentage prc = {
+		.max = dev->data_dump.max_flash_size,
+		.step_percentage = 10,
+		.is_cr = true
+	};
 	struct req_read_data_flash req = {
 		.hdr.command = CMD_READ_DATA_FLASH,
 	};
@@ -637,6 +766,7 @@ static void read_data_flash(struct device *dev)
 
 		to_read -= len;
 		offset += len;
+		percentage_inc(&prc, len);
 	}
 }
 
@@ -713,7 +843,7 @@ int main(int argc, char *argv[])
 	while (1) {
 		int option_index = 0;
 
-		c = getopt_long(argc, argv, "c:df:hk:l:m:"
+		c = getopt_long(argc, argv, "c:df:hk:l:m:s:u:vw:"
 #ifndef WIN32
 				"p:"
 #endif
@@ -753,11 +883,39 @@ int main(int argc, char *argv[])
 			dev.data_dump.filename = optarg;
 			do_data_dump = true;
 			break;
+		case 's':
+			c = strtoul(optarg, NULL, 10);
+			if (c == 115200)
+				break;
+			for (i = 0; i < ARRAY_SIZE(baudrates); i++)	{
+				if (baudrates[i].baudrate == c) {
+					dev.upd_baudrate = true;
+					dev.baud.baudrate = c;
+					dev.baud.baud_param_ioterm = baudrates[i].baud_param_ioterm;
+					break;
+				}
+			}
+			if (!dev.upd_baudrate) {
+				printf("Illegal param value for Baudrate\n");
+				return EXIT_FAILURE;
+			}
+			break;
+		case 'u':
+			dev.upd_cfg_user_bits = true;
+			dev.cfg_user_bits = strtoul(optarg, NULL, 16);
+			break;
+		case 'w':
+			dev.upd_protection_bits = true;
+			dev.cfg_protection_bits = strtoul(optarg, NULL, 16);
+			break;
 #ifndef WIN32
 		case 'p':
 			port = optarg;
 			break;
 #endif
+		case 'v':
+			printf("isp-%s\n", PACKAGE_VERSION);
+			return EXIT_SUCCESS;
 		case 'h':
 			usage();
 			return EXIT_SUCCESS;
@@ -770,11 +928,20 @@ int main(int argc, char *argv[])
 		errx(EXIT_FAILURE, "Extra argument: %s", argv[optind]);
 
 #ifndef WIN32
-	if (port)
+	if (port) {
 		open_serial_device(&dev, port);
+
+		if (dev.upd_baudrate)
+			change_uart_baudrate(&dev);
+	}
 	else
 #endif
+
+#if (!defined(WITHOUT_USB) || (WITHOUT_USB == 0))
 		open_usb_device(&dev);
+#else
+		printf("Serial port is not specified\n");
+#endif
 
 	read_chip_type(&dev);
 	printf("Found device %s\n", dev.profile->name);
@@ -791,6 +958,8 @@ int main(int argc, char *argv[])
 		printf("%02x", dev.id[i]);
 	}
 	printf("\n");
+
+	hexdump_line("Current config-bits   ", dev.config_data, sizeof(dev.config_data));
 
 	/* check bootloader version */
 	switch (dev.bv) {
@@ -822,7 +991,6 @@ int main(int argc, char *argv[])
 		load_file(&dev, &dev.data);
 
 	/* Code flash */
-
 	if (do_code_flash) {
 		send_key(&dev);
 		write_config(&dev);
@@ -865,6 +1033,14 @@ int main(int argc, char *argv[])
 
 		printf("Dumped data flash to file\n");
 	}
+
+#ifndef WIN32
+	if (port && dev.upd_baudrate) {
+		dev.baud.baudrate = 115200;
+		dev.baud.baud_param_ioterm = B115200;
+		change_uart_baudrate(&dev);
+	}
+#endif
 
 	if (do_code_flash)
 		reboot_device(&dev);

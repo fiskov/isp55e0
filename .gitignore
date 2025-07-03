@@ -1,2 +1,4 @@
 isp55e0
 isp55e0.o
+*.sh
+.vscode
