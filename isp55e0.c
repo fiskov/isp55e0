@@ -63,6 +63,8 @@ static const struct option long_options[] = {
 	{ "data-flash", required_argument, 0,  'k' },
 	{ "data-verify", required_argument, 0,  'l' },
 	{ "data-dump", required_argument, 0,  'm' },
+	{ "user-config", required_argument, 0, 'u' },
+	{ "write-protection-config", required_argument, 0, 'w' },
 #ifndef WIN32
 	{ "port", required_argument, 0,  'p' },
 #endif
@@ -82,6 +84,8 @@ static void usage(void)
 	printf("  --data-verify, -l   verify existing data\n");
 	printf("  --data-dump, -m     dump the data flash to a file\n");
 	printf("  --debug, -d         turn debug traces on\n");
+	printf("  --user-config, -u   User-level Configuration, e.g. 4d\n");
+	printf("  --write-protection-config, -w Write-Protection Cfg., e.g. ffffffff\n");
 	printf("  --help, -h          this help\n");
 }
 
@@ -96,6 +100,18 @@ static void hexdump(const char *name, const void *data, int len)
 			printf("\n");
 
 		printf("%02x ", *p++);
+	}
+	printf("\n");
+}
+
+static void hexdump_line(const char *name, const void *data, int len)
+{
+	const uint8_t *p = data;
+	int i;
+
+	printf("%s ", name);
+	for (i = 0; i < len; i++) {
+		printf("%s%02x", (i > 0 ? "-" : ""), *p++);
 	}
 	printf("\n");
 }
@@ -356,6 +372,18 @@ static void write_config(struct device *dev)
 		 */
 		req.config_data[8] &= ~0x80;
 	}
+
+	if (dev->upd_cfg_user_bits)
+		req.config_data[8] = dev->cfg_user_bits;
+	
+	if (dev->upd_protection_bits) {
+		req.config_data[0] = dev->cfg_protection_bits >> 24;
+		req.config_data[1] = dev->cfg_protection_bits >> 16;
+		req.config_data[2] = dev->cfg_protection_bits >> 8;
+		req.config_data[3] = dev->cfg_protection_bits;
+	}
+
+	hexdump_line("Write new config-bits ", req.config_data, sizeof(req.config_data));
 
 	ret = transfer(dev, &req, sizeof(req), &resp, sizeof(resp));
 	if (ret)
@@ -723,7 +751,7 @@ int main(int argc, char *argv[])
 	while (1) {
 		int option_index = 0;
 
-		c = getopt_long(argc, argv, "c:df:hk:l:m:"
+		c = getopt_long(argc, argv, "c:df:hk:l:m:u:w:"
 #ifndef WIN32
 				"p:"
 #endif
@@ -763,6 +791,15 @@ int main(int argc, char *argv[])
 			dev.data_dump.filename = optarg;
 			do_data_dump = true;
 			break;
+		case 'u':
+			dev.upd_cfg_user_bits = true;
+			dev.cfg_user_bits = strtoul(optarg, NULL, 16);
+			break;
+		case 'w':
+			dev.upd_protection_bits = true;
+			dev.cfg_protection_bits = strtoul(optarg, NULL, 16);
+			break;
+
 #ifndef WIN32
 		case 'p':
 			port = optarg;
@@ -806,6 +843,8 @@ int main(int argc, char *argv[])
 		printf("%02x", dev.id[i]);
 	}
 	printf("\n");
+
+	hexdump_line("Current config-bits   ", dev.config_data, sizeof(dev.config_data));
 
 	/* check bootloader version */
 	switch (dev.bv) {

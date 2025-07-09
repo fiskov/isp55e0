@@ -49,6 +49,9 @@ struct device {
 	uint32_t bv;		/* bootloader version */
 	uint8_t id[8];
 	uint8_t config_data[12];
+	bool upd_cfg_user_bits, upd_protection_bits;
+	uint8_t cfg_user_bits;
+	uint32_t cfg_protection_bits;
 	uint8_t xor_key[XOR_KEY_LEN];
 	bool wait_reboot_resp;	/* wait for reboot command response */
 #ifndef WIN32

@@ -24,6 +24,8 @@ Help:
     --data-verify, -l   verify existing data
     --data-dump, -m     dump the data flash to a file
     --debug, -d         turn debug traces on
+    --user-config, -u   User-level Configuration, e.g. 4d
+    --write-protection-config, -w Write-Protection Cfg., e.g. ffffffff
     --help, -h          this help
 ```
 
