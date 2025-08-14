@@ -203,6 +203,17 @@ struct resp_read_data_flash {
 	uint8_t data[58];
 } __attribute__((__packed__));
 
+struct req_set_baudrate {
+	struct req_hdr hdr;
+	uint16_t what;		/* bitfield of config types? */
+	uint8_t config_data[12];
+} __attribute__((__packed__));
+
+struct resp_set_baudrate {
+	struct resp_hdr hdr;
+	uint16_t return_code;
+} __attribute__((__packed__));
+
 typedef struct percentage_t
 {
     int max, step_percentage, pos;

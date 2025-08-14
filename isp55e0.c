@@ -153,7 +153,7 @@ int percentage_inc(percentage_t *p, int value)
         if (p->is_dot)
             printf(".");
         else
-            printf("%s%d%%%s", (p->is_cr ? "\r" : ""), prc_new, (p->is_cr ? "" : "\n"));
+            printf("%d%%%s", prc_new, (p->is_cr ? "\r" : "\n"));
         if (p->is_dot || p->is_cr)
             fflush(stdout);
     }
@@ -168,7 +168,6 @@ static void open_serial_device(struct device *dev, char *port)
 	struct termios options;
 	int status;
 	speed_t baud = dev->baud.baud_param_ioterm;// B115200;
-	printf("Baudrate = %d(%X)\n", (int)dev->baud.baudrate, (int)dev->baud.baud_param_ioterm);
 
 	if ((dev->fd = open(port, O_RDWR | O_NOCTTY)) == -1)
 		errx(EXIT_FAILURE, "Error occured while opening serial port '%s'", port);
@@ -244,17 +243,19 @@ static unsigned char serial_crc(unsigned char *req, int req_len)
 	int ret;
 	struct termios options;
 
-	struct req_read_config req = {
+	struct req_set_baudrate req = {
 		.hdr.command = CMD_SET_BAUD,
 		.hdr.data_len = sizeof(req) - sizeof(req.hdr),
 		.what = 0x1f,
 	};
-	struct resp_read_config resp;
+	struct resp_set_baudrate resp;
 
 	ret = transfer(dev, &req, sizeof(req), &resp, sizeof(resp));
 	if (ret)
-		errx(EXIT_FAILURE, "Can't get the device configuration");
+		errx(EXIT_FAILURE, "Can't set the device UART baudrate");
 
+	if (resp.return_code != 0x00)
+		errx(EXIT_FAILURE, "The device refused to change baudrate");
 
 	ret = tcgetattr(dev->fd, &options);
 	if (ret < 0)
@@ -606,10 +607,10 @@ static void send_key(struct device *dev)
 static int flash_rw(struct device *dev, int cmd, struct content *info,
 		    int *offset_out)
 {
+	percentage_t prc = {.max = info->len, .step_percentage = 10, .is_cr = true};
 	struct req_flash_rw req = {
 		.hdr.command = cmd,
 	};
-	percentage_t prc = {.max = info->len, .step_percentage = 10, .is_cr = true};
 	struct resp_flash_rw resp;
 	int offset;
 	int to_send;
@@ -722,10 +723,10 @@ static void write_data_flash(struct device *dev)
 
 static void read_data_flash(struct device *dev)
 {
+	percentage_t prc = {.max = dev->data_dump.max_flash_size, .step_percentage = 10, .is_cr = true};
 	struct req_read_data_flash req = {
 		.hdr.command = CMD_READ_DATA_FLASH,
 	};
-	percentage_t prc = {.max = dev->data_dump.max_flash_size, .step_percentage = 10, .is_cr = true};
 	struct resp_read_data_flash resp;
 	int to_read;
 	int offset;
@@ -982,8 +983,8 @@ int main(int argc, char *argv[])
 		load_file(&dev, &dev.data);
 
 	/* Code flash */
-	//if (dev.upd_baudrate)
-	//	change_uart_baudrate(&dev, dev.baud.baud_param_ioterm);
+	if (dev.upd_baudrate)
+		change_uart_baudrate(&dev, dev.baud.baud_param_ioterm);
 
 	if (do_code_flash) {
 		send_key(&dev);
