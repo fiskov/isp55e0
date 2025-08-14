@@ -75,7 +75,6 @@ static const struct option long_options[] = {
 #define BAUDRATE_DEFAULT B115200
 
 static const struct baudrate_t baudrates[] = {
-	{ 115200, B115200 },
 	{ 230400, B230400 },
 	{ 460800, B460800 },
 	{ 500000, B500000 },
@@ -167,7 +166,7 @@ static void open_serial_device(struct device *dev, char *port)
 	int ret;
 	struct termios options;
 	int status;
-	speed_t baud = dev->baud.baud_param_ioterm;// B115200;
+	speed_t baud = B115200;
 
 	if ((dev->fd = open(port, O_RDWR | O_NOCTTY)) == -1)
 		errx(EXIT_FAILURE, "Error occured while opening serial port '%s'", port);
@@ -234,44 +233,39 @@ static unsigned char serial_crc(unsigned char *req, int req_len)
 	return crc;
 }
 
-/*static*/ void change_uart_baudrate(struct device *dev, uint32_t baud_param)
+static void change_uart_baudrate(struct device *dev)
 {
 	#define FAIL_TEXT "Error occured while configuring serial port"
 
-	printf("Set new baudrate=%d\n", (int)dev->baud.baudrate);
-
 	int ret;
-	struct termios options;
+
+	uint32_t baud = dev->baud.baudrate;
+	uint32_t baud_param = dev->baud.baud_param_ioterm;
 
 	struct req_set_baudrate req = {
 		.hdr.command = CMD_SET_BAUD,
 		.hdr.data_len = sizeof(req) - sizeof(req.hdr),
-		.what = 0x1f,
+		.baud[0] = baud >> 0,
+		.baud[1] = baud >> 8,
+		.baud[2] = baud >> 16,
+		.baud[3] = baud >> 24
 	};
 	struct resp_set_baudrate resp;
+
+	printf("Set new baudrate=%d\n", baud);
 
 	ret = transfer(dev, &req, sizeof(req), &resp, sizeof(resp));
 	if (ret)
 		errx(EXIT_FAILURE, "Can't set the device UART baudrate");
 
-	if (resp.return_code != 0x00)
+	if (resp.return_code)
 		errx(EXIT_FAILURE, "The device refused to change baudrate");
 
-	ret = tcgetattr(dev->fd, &options);
-	if (ret < 0)
-		errx(EXIT_FAILURE, FAIL_TEXT " GET_ATTR");
-
-	ret = cfsetispeed(&options, baud_param);
-	if (ret < 0)
-		errx(EXIT_FAILURE, FAIL_TEXT " SET_I");
-	
-	ret = cfsetospeed(&options, baud_param);
-	if (ret < 0)
-		errx(EXIT_FAILURE, FAIL_TEXT " SET_O");
-
-	ret = tcsetattr(dev->fd, TCSANOW, &options) ;
-	if (ret < 0)
-		errx(EXIT_FAILURE, FAIL_TEXT " SET_ATTR");
+	struct termios options;
+	tcgetattr(dev->fd, &options);
+	cfsetispeed(&options, baud_param);
+	cfsetospeed(&options, baud_param);
+	tcsetattr(dev->fd, TCSANOW, &options);
 }
 #endif
 
@@ -825,7 +819,7 @@ static void reboot_device(struct device *dev)
 
 int main(int argc, char *argv[])
 {
-	struct device dev = {.baud.baudrate=115200, .baud.baud_param_ioterm=B115200};
+	struct device dev = {};
 	bool do_code_flash = false;
 	bool do_code_verify = false;
 	bool do_data_flash = false;
@@ -882,6 +876,8 @@ int main(int argc, char *argv[])
 			break;
 		case 's':
 			c = strtoul(optarg, NULL, 10);
+			if (c==115200)
+				break;
 			for (i=0; i<ARRAY_SIZE(baudrates); i++)
 			{
 				if (baudrates[i].baudrate == c)
@@ -925,7 +921,12 @@ int main(int argc, char *argv[])
 
 #ifndef WIN32
 	if (port)
+	{
 		open_serial_device(&dev, port);
+
+		if (dev.upd_baudrate)
+			change_uart_baudrate(&dev);
+	}
 	else
 #endif
 	
@@ -983,9 +984,6 @@ int main(int argc, char *argv[])
 		load_file(&dev, &dev.data);
 
 	/* Code flash */
-	if (dev.upd_baudrate)
-		change_uart_baudrate(&dev, dev.baud.baud_param_ioterm);
-
 	if (do_code_flash) {
 		send_key(&dev);
 		write_config(&dev);
@@ -1028,6 +1026,15 @@ int main(int argc, char *argv[])
 
 		printf("Dumped data flash to file\n");
 	}
+
+#ifndef WIN32
+	if (port && dev.upd_baudrate)
+	{
+		dev.baud.baudrate = 115200;
+		dev.baud.baud_param_ioterm = B115200;
+		change_uart_baudrate(&dev);
+	}
+#endif
 
 	if (do_code_flash)
 		reboot_device(&dev);

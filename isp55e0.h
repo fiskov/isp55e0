@@ -72,7 +72,7 @@ struct device {
 
 /* Enough to erase the flash. */
 #define USB_TIMEOUT 5000 // milliseconds
-#define SERIAL_TIMEOUT 50 // deciseconds
+#define SERIAL_TIMEOUT 10 // deciseconds
 
 #define CMD_CHIP_TYPE        0xa1
 #define CMD_REBOOT           0xa2
@@ -205,8 +205,7 @@ struct resp_read_data_flash {
 
 struct req_set_baudrate {
 	struct req_hdr hdr;
-	uint16_t what;		/* bitfield of config types? */
-	uint8_t config_data[12];
+	uint8_t baud[4];
 } __attribute__((__packed__));
 
 struct resp_set_baudrate {
