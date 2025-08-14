@@ -64,12 +64,28 @@ static const struct option long_options[] = {
 	{ "data-verify", required_argument, 0,  'l' },
 	{ "data-dump", required_argument, 0,  'm' },
 	{ "user-config", required_argument, 0, 'u' },
+	{ "speed", required_argument, 0, 's' },
 	{ "write-protection-config", required_argument, 0, 'w' },
 #ifndef WIN32
 	{ "port", required_argument, 0,  'p' },
 #endif
 	{ 0, 0, 0, 0 }
 };
+
+#define BAUDRATE_DEFAULT B115200
+
+static const struct baudrate_t baudrates[] = {
+	{ 115200, B115200 },
+	{ 230400, B230400 },
+	{ 460800, B460800 },
+	{ 500000, B500000 },
+	{ 921600, B921600 },
+	{ 1000000, B1000000 },
+	{ 2000000, B2000000 }
+};
+
+static int transfer(struct device *dev, void *req, int req_len,
+		    void *resp, int resp_len);
 
 static void usage(void)
 {
@@ -84,6 +100,7 @@ static void usage(void)
 	printf("  --data-verify, -l   verify existing data\n");
 	printf("  --data-dump, -m     dump the data flash to a file\n");
 	printf("  --debug, -d         turn debug traces on\n");
+	printf("  --speed, -s         UART speed [115200,230400,460800,500000,921600,1000000,2000000]\n");
 	printf("  --user-config, -u   User-level Configuration, e.g. 4d\n");
 	printf("  --write-protection-config, -w Write-Protection Cfg., e.g. ffffffff\n");
 	printf("  --help, -h          this help\n");
@@ -116,13 +133,42 @@ static void hexdump_line(const char *name, const void *data, int len)
 	printf("\n");
 }
 
+int percentage_inc(percentage_t *p, int value)
+{
+    if (!p || !(p->max))
+        return -1;
+
+    int prc, prc_new, step, step_new;
+    
+    prc = p->pos * 100 / p->max;
+    step = prc / p->step_percentage;
+
+    p->pos += value;
+
+    prc_new = p->pos * 100 / p->max;
+    step_new = prc_new / p->step_percentage;
+
+    if (step != step_new)
+    {
+        if (p->is_dot)
+            printf(".");
+        else
+            printf("%s%d%%%s", (p->is_cr ? "\r" : ""), prc_new, (p->is_cr ? "" : "\n"));
+        if (p->is_dot || p->is_cr)
+            fflush(stdout);
+    }
+
+    return 0;
+}
+
 #ifndef WIN32
 static void open_serial_device(struct device *dev, char *port)
 {
 	int ret;
 	struct termios options;
 	int status;
-	speed_t baud = B115200;
+	speed_t baud = dev->baud.baud_param_ioterm;// B115200;
+	printf("Baudrate = %d(%X)\n", (int)dev->baud.baudrate, (int)dev->baud.baud_param_ioterm);
 
 	if ((dev->fd = open(port, O_RDWR | O_NOCTTY)) == -1)
 		errx(EXIT_FAILURE, "Error occured while opening serial port '%s'", port);
@@ -187,6 +233,44 @@ static unsigned char serial_crc(unsigned char *req, int req_len)
 	}
 
 	return crc;
+}
+
+/*static*/ void change_uart_baudrate(struct device *dev, uint32_t baud_param)
+{
+	#define FAIL_TEXT "Error occured while configuring serial port"
+
+	printf("Set new baudrate=%d\n", (int)dev->baud.baudrate);
+
+	int ret;
+	struct termios options;
+
+	struct req_read_config req = {
+		.hdr.command = CMD_SET_BAUD,
+		.hdr.data_len = sizeof(req) - sizeof(req.hdr),
+		.what = 0x1f,
+	};
+	struct resp_read_config resp;
+
+	ret = transfer(dev, &req, sizeof(req), &resp, sizeof(resp));
+	if (ret)
+		errx(EXIT_FAILURE, "Can't get the device configuration");
+
+
+	ret = tcgetattr(dev->fd, &options);
+	if (ret < 0)
+		errx(EXIT_FAILURE, FAIL_TEXT " GET_ATTR");
+
+	ret = cfsetispeed(&options, baud_param);
+	if (ret < 0)
+		errx(EXIT_FAILURE, FAIL_TEXT " SET_I");
+	
+	ret = cfsetospeed(&options, baud_param);
+	if (ret < 0)
+		errx(EXIT_FAILURE, FAIL_TEXT " SET_O");
+
+	ret = tcsetattr(dev->fd, TCSANOW, &options) ;
+	if (ret < 0)
+		errx(EXIT_FAILURE, FAIL_TEXT " SET_ATTR");
 }
 #endif
 
@@ -525,6 +609,7 @@ static int flash_rw(struct device *dev, int cmd, struct content *info,
 	struct req_flash_rw req = {
 		.hdr.command = cmd,
 	};
+	percentage_t prc = {.max = info->len, .step_percentage = 10, .is_cr = true};
 	struct resp_flash_rw resp;
 	int offset;
 	int to_send;
@@ -557,6 +642,7 @@ static int flash_rw(struct device *dev, int cmd, struct content *info,
 
 		to_send -= len;
 		offset += len;
+		percentage_inc(&prc, len);
 	}
 
 	if (cmd == CMD_WRITE_CODE_FLASH && dev->profile->need_last_write) {
@@ -639,6 +725,7 @@ static void read_data_flash(struct device *dev)
 	struct req_read_data_flash req = {
 		.hdr.command = CMD_READ_DATA_FLASH,
 	};
+	percentage_t prc = {.max = dev->data_dump.max_flash_size, .step_percentage = 10, .is_cr = true};
 	struct resp_read_data_flash resp;
 	int to_read;
 	int offset;
@@ -675,6 +762,7 @@ static void read_data_flash(struct device *dev)
 
 		to_read -= len;
 		offset += len;
+		percentage_inc(&prc, len);
 	}
 }
 
@@ -736,7 +824,7 @@ static void reboot_device(struct device *dev)
 
 int main(int argc, char *argv[])
 {
-	struct device dev = {};
+	struct device dev = {.baud.baudrate=115200, .baud.baud_param_ioterm=B115200};
 	bool do_code_flash = false;
 	bool do_code_verify = false;
 	bool do_data_flash = false;
@@ -751,7 +839,7 @@ int main(int argc, char *argv[])
 	while (1) {
 		int option_index = 0;
 
-		c = getopt_long(argc, argv, "c:df:hk:l:m:u:w:"
+		c = getopt_long(argc, argv, "c:df:hk:l:m:s:u:w:"
 #ifndef WIN32
 				"p:"
 #endif
@@ -790,6 +878,24 @@ int main(int argc, char *argv[])
 		case 'm':
 			dev.data_dump.filename = optarg;
 			do_data_dump = true;
+			break;
+		case 's':
+			c = strtoul(optarg, NULL, 10);
+			for (i=0; i<ARRAY_SIZE(baudrates); i++)
+			{
+				if (baudrates[i].baudrate == c)
+				{
+					dev.upd_baudrate = true;
+					dev.baud.baudrate = c;
+					dev.baud.baud_param_ioterm = baudrates[i].baud_param_ioterm;
+					break;
+				}
+			}
+			if (!dev.upd_baudrate)
+			{
+				printf("Illegal param value for Baudrate\n");
+				return EXIT_FAILURE;
+			}
 			break;
 		case 'u':
 			dev.upd_cfg_user_bits = true;
@@ -876,6 +982,8 @@ int main(int argc, char *argv[])
 		load_file(&dev, &dev.data);
 
 	/* Code flash */
+	//if (dev.upd_baudrate)
+	//	change_uart_baudrate(&dev, dev.baud.baud_param_ioterm);
 
 	if (do_code_flash) {
 		send_key(&dev);

@@ -4,6 +4,8 @@
 
 #define XOR_KEY_LEN 8
 
+#define ARRAY_SIZE(X) (sizeof(X)/sizeof(X[0]))
+
 /* Serial port wrapper magics */
 #define SERIAL_REQ_MAGIC1 (0x57)
 #define SERIAL_REQ_MAGIC2 (0xAB)
@@ -36,6 +38,13 @@ struct content {
 	uint8_t *buf;
 };
 
+struct baudrate_t
+{
+	uint32_t baudrate;
+	uint32_t baud_param_ioterm;
+};
+
+
 /* Current device */
 struct device {
 	const struct ch_profile *profile;
@@ -50,6 +59,8 @@ struct device {
 	uint8_t id[8];
 	uint8_t config_data[12];
 	bool upd_cfg_user_bits, upd_protection_bits;
+	bool upd_baudrate;
+	struct baudrate_t baud;
 	uint8_t cfg_user_bits;
 	uint32_t cfg_protection_bits;
 	uint8_t xor_key[XOR_KEY_LEN];
@@ -74,6 +85,7 @@ struct device {
 #define CMD_ERASE_DATA_FLASH 0xa9
 #define CMD_WRITE_DATA_FLASH 0xaa
 #define CMD_READ_DATA_FLASH  0xab
+#define CMD_SET_BAUD         0xc5
 
 struct req_hdr {
 	uint8_t command;
@@ -190,3 +202,9 @@ struct resp_read_data_flash {
 	uint16_t return_code;
 	uint8_t data[58];
 } __attribute__((__packed__));
+
+typedef struct percentage_t
+{
+    int max, step_percentage, pos;
+    bool is_cr, is_dot;
+} percentage_t;
