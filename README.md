@@ -27,6 +27,7 @@ Help:
     --speed, -s         UART speed [115200,230400,460800,500000,921600,1000000,2000000]
     --user-config, -u   User-level Configuration, e.g. 4d
     --write-protection-config, -w Write-Protection Cfg., e.g. ffffffff
+    --version, -v       version
     --help, -h          this help
 ```
 

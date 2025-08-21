@@ -50,6 +50,7 @@
 #endif
 
 #include "isp55e0.h"
+#include "version.h"
 /* Profile of supported chips */
 static const struct ch_profile profiles[] = {
 #include "chips.h"
@@ -59,6 +60,7 @@ static const struct option long_options[] = {
 	{ "code-verify", required_argument, 0, 'c' },
 	{ "debug", no_argument, 0,  'd' },
 	{ "code-flash", required_argument, 0,  'f' },
+	{ "version", no_argument, 0,  'v' },
 	{ "help", no_argument, 0,  'h' },
 	{ "data-flash", required_argument, 0,  'k' },
 	{ "data-verify", required_argument, 0,  'l' },
@@ -88,7 +90,7 @@ static int transfer(struct device *dev, void *req, int req_len,
 
 static void usage(void)
 {
-	printf("ISP programmer for some WinChipHead MCUs\n");
+	printf("ISP programmer [version %s] for some WinChipHead MCUs\n", PACKAGE_VERSION);
 	printf("Options:\n");
 #ifndef WIN32
 	printf("  --port, -p          use serial port instead of usb\n");
@@ -102,6 +104,7 @@ static void usage(void)
 	printf("  --speed, -s         UART speed [115200,230400,460800,500000,921600,1000000,2000000]\n");
 	printf("  --user-config, -u   User-level Configuration, e.g. 4d\n");
 	printf("  --write-protection-config, -w Write-Protection Cfg., e.g. ffffffff\n");
+	printf("  --version, -v       show the version\n");
 	printf("  --help, -h          this help\n");
 }
 
@@ -834,7 +837,7 @@ int main(int argc, char *argv[])
 	while (1) {
 		int option_index = 0;
 
-		c = getopt_long(argc, argv, "c:df:hk:l:m:s:u:w:"
+		c = getopt_long(argc, argv, "c:df:hk:l:m:s:u:vw:"
 #ifndef WIN32
 				"p:"
 #endif
@@ -908,6 +911,9 @@ int main(int argc, char *argv[])
 			port = optarg;
 			break;
 #endif
+		case 'v':
+			printf("isp-%s\n", PACKAGE_VERSION);
+			return EXIT_SUCCESS;
 		case 'h':
 			usage();
 			return EXIT_SUCCESS;
